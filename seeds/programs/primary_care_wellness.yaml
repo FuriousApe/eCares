@@ -1,0 +1,6 @@
+program_id: primary_care_wellness
+version: 1
+eligibility: {min_age: 18}
+tiers:
+  - {name: high_priority, when: {any: [{min_age: 65}, {diagnosis_prefix: [E10, E11, I10, E78, J45, N18, I25, E03, "G47.3", M81]}]}, needs: {PCP: 180}}
+  - {name: standard,      when: default, needs: {PCP: 365}}

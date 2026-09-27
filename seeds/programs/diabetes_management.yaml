@@ -1,0 +1,9 @@
+program_id: diabetes_management
+version: 1
+eligibility: {any_diagnosis_prefix: [E10, E11]}
+tier_signal: {lab: HbA1c, window_months: 6}
+tiers:
+  - {name: high_risk,   when: {gte: 9.0},           needs: {Endocrinology: 90, Cardiology: 90, Podiatry: 180, Ophthalmology: 365, Nephrology: 180}}
+  - {name: moderate,    when: {gte: 7.0, lt: 9.0},  needs: {Endocrinology: 180, Ophthalmology: 365, Podiatry: 365}}
+  - {name: low_risk,    when: {lt: 7.0},            needs: {Endocrinology: 365, Ophthalmology: 365}}
+  - {name: unmonitored, when: no_result,            needs: {Endocrinology: 90}}

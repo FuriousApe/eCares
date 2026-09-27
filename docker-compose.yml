@@ -1,0 +1,156 @@
+name: care-gap-engine
+
+x-app-env: &app-env
+  AS_OF_DATE: "2026-04-08"
+  MYSQL_HOST: mysql
+  MYSQL_PORT: "3306"
+  MYSQL_USER: care_gap
+  MYSQL_PASSWORD: care_gap
+  MYSQL_DATABASE: care_gap
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  DATA_SERVICE_TARGET: data-service:50051
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: care_gap
+      MYSQL_USER: care_gap
+      MYSQL_PASSWORD: care_gap
+    ports: ["3306:3306"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.8.0
+    ports: ["29092:29092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: "Q2FyZUdhcEVuZ2luZUtSYWZ0"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  migrate:
+    build: .
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment: *app-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  data-service:
+    build: .
+    environment:
+      <<: *app-env
+      ROLE: data-service
+      DS_ROLES: "interactive,bulk,relay"
+      GRPC_PORT: "50051"
+    ports: ["50051:50051"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost',50051),2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  worklist-api:
+    build: .
+    environment:
+      <<: *app-env
+      ROLE: worklist-api
+      HTTP_PORT: "8000"
+    ports: ["8000:8000"]
+    volumes:
+      # POST /admin/sync drives services/sync's CSV loader in-process
+      # (CLAUDE.md decision #15), so this container needs the same read-only
+      # access to the source CSVs that the sync job's own container has.
+      - ./data:/app/data:ro
+    depends_on:
+      data-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  engine:
+    build: .
+    environment:
+      <<: *app-env
+      ROLE: engine
+      KAFKA_CONSUMER_GROUP: engine
+    depends_on:
+      data-service:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    environment:
+      <<: *app-env
+      ROLE: scheduler
+      SCHEDULER_INTERVAL_SECONDS: "60"
+    depends_on:
+      data-service:
+        condition: service_healthy
+
+  sync:
+    build: .
+    environment:
+      <<: *app-env
+      ROLE: sync
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      data-service:
+        condition: service_healthy
+    restart: "no"
+
+  ui:
+    build: ./services/ui
+    environment:
+      WORKLIST_API_BASE_URL: http://localhost:8000
+    ports: ["3000:3000"]
+    depends_on:
+      - worklist-api
+
+volumes:
+  mysql_data:

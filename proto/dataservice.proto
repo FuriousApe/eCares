@@ -1,0 +1,399 @@
+syntax = "proto3";
+
+package care_gap.dataservice.v1;
+
+// ============================================================================
+// Data Service contract.
+//
+// The Data Service is the ONLY component with MySQL credentials. Every other
+// service (worklist_api, engine, sync, scheduler) talks to it exclusively
+// through this contract. Methods are grouped the same way the plan groups the
+// Data Service's internal roles:
+//   - interactive read  : ListTasks, ListPatients, GetPatient, GetTask,
+//                          ListPrograms, GetMeta
+//   - interactive write : ClaimTask, CompleteTask, DeclineTask, SnoozeTask
+//   - bulk               : StartSyncRun, UpsertFacts, CompleteSyncRun,
+//                          GetPatientSnapshot, SaveEvaluationResult,
+//                          EnqueueDuePatients, EnqueueAllPatients,
+//                          ListSyncRuns
+// The outbox relay is an internal loop with no RPC surface.
+// ============================================================================
+
+service DataService {
+  // --- interactive read ---
+  rpc GetMeta(GetMetaRequest) returns (GetMetaResponse);
+  rpc ListPatients(ListPatientsRequest) returns (ListPatientsResponse);
+  rpc GetPatient(GetPatientRequest) returns (GetPatientResponse);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  rpc ListPrograms(ListProgramsRequest) returns (ListProgramsResponse);
+
+  // --- interactive write (task state machine, optimistic locking) ---
+  rpc ClaimTask(ClaimTaskRequest) returns (TaskResponse);
+  rpc CompleteTask(CompleteTaskRequest) returns (TaskResponse);
+  rpc DeclineTask(DeclineTaskRequest) returns (TaskResponse);
+  rpc SnoozeTask(SnoozeTaskRequest) returns (TaskResponse);
+
+  // --- bulk (sync, engine, scheduler) ---
+  rpc StartSyncRun(StartSyncRunRequest) returns (StartSyncRunResponse);
+  rpc UpsertFacts(UpsertFactsRequest) returns (UpsertFactsResponse);
+  rpc CompleteSyncRun(CompleteSyncRunRequest) returns (CompleteSyncRunResponse);
+  rpc ListSyncRuns(ListSyncRunsRequest) returns (ListSyncRunsResponse);
+
+  // The engine owns the YAML program loader; this persists what it parsed
+  // so "programs stored as data" is backed by MySQL, not just a file on
+  // disk, and GET /programs reflects it. Upsert is keyed by
+  // (program_id, version) — re-loading the same YAML changes nothing.
+  rpc UpsertPrograms(UpsertProgramsRequest) returns (UpsertProgramsResponse);
+
+  rpc GetPatientSnapshot(GetPatientSnapshotRequest) returns (GetPatientSnapshotResponse);
+  rpc SaveEvaluationResult(SaveEvaluationResultRequest) returns (SaveEvaluationResultResponse);
+
+  rpc EnqueueDuePatients(EnqueueDuePatientsRequest) returns (EnqueueDuePatientsResponse);
+  rpc EnqueueAllPatients(EnqueueAllPatientsRequest) returns (EnqueueAllPatientsResponse);
+}
+
+// ============================================================================
+// Shared value types
+// ============================================================================
+
+message Patient {
+  string patient_id = 1;
+  string first_name = 2;
+  string last_name = 3;
+  string date_of_birth = 4;   // ISO date
+  string gender = 5;
+  string phone = 6;
+  string language = 7;
+  optional string pcp_provider_name = 8;
+  int32 age = 9;               // derived, as of AS_OF_DATE
+}
+
+message Enrollment {
+  string program_id = 1;
+  int32 program_version = 2;
+  string tier = 3;
+  string evaluated_at = 4;     // ISO datetime
+}
+
+message Need {
+  string program_id = 1;
+  string specialty = 2;
+  int32 cadence_days = 3;
+  optional string last_visit_date = 4;
+  optional string due_date = 5;
+  bool has_upcoming = 6;
+}
+
+message Task {
+  int64 task_id = 1;
+  string patient_id = 2;
+  string program_id = 3;
+  string tier = 4;
+  string specialty = 5;
+  string task_type = 6;        // scheduling | referral
+  string status = 7;           // open | in_progress | completed | declined | closed
+  optional string due_date = 8;
+  optional int32 days_overdue = 9;
+  optional string snooze_until = 10;
+  optional string resolution = 11;
+  optional string assigned_to = 12;
+  int32 program_version = 13;
+  int32 version = 14;
+  string created_at = 15;
+  string updated_at = 16;
+  // Populated on ListTasks / GetTask for the joined patient basics.
+  optional Patient patient = 17;
+}
+
+message AuditEntry {
+  string event_id = 1;
+  string occurred_at = 2;
+  string actor = 3;
+  string action = 4;
+  string entity = 5;
+  optional string patient_id = 6;
+  string before_json = 7;
+  string after_json = 8;
+  string request_id = 9;
+  string result = 10;
+}
+
+message Program {
+  string program_id = 1;
+  int32 version = 2;
+  string definition_json = 3;   // the definition, serialized as JSON
+  bool active = 4;
+}
+
+message SyncRun {
+  string run_id = 1;
+  string status = 2;           // running | completed | failed
+  string started_at = 3;
+  optional string finished_at = 4;
+  string counts_json = 5;      // per-resource accepted/rejected counts
+  string watermarks_json = 6;
+}
+
+// ============================================================================
+// Interactive read
+// ============================================================================
+
+message GetMetaRequest {}
+message GetMetaResponse {
+  string as_of_date = 1;
+  optional string last_sync_finished_at = 2;
+  map<string, int32> task_counts_by_status = 3;
+}
+
+message RoleFilter {
+  // Task types this caller may see. Applied inside the SQL WHERE, never
+  // filtered client-side, so a disallowed filter yields an empty page
+  // instead of an error that would reveal the row exists.
+  repeated string allowed_task_types = 1;
+  string role = 2;
+  string user_id = 3;
+}
+
+message ListPatientsRequest {
+  RoleFilter role_filter = 1;
+  optional string specialty = 2;
+  optional string task_type = 3;
+  optional string status = 4;
+  optional string program = 5;
+  optional string tier = 6;
+  optional string q = 7;
+  int32 limit = 8;
+  optional string cursor = 9;
+}
+message PatientWithContext {
+  Patient patient = 1;
+  repeated Enrollment enrollments = 2;
+  repeated Task visible_tasks = 3;
+}
+message ListPatientsResponse {
+  repeated PatientWithContext items = 1;
+  optional string next_cursor = 2;
+}
+
+message GetPatientRequest {
+  string patient_id = 1;
+  RoleFilter role_filter = 2;
+}
+message GetPatientResponse {
+  Patient patient = 1;
+  repeated Enrollment enrollments = 2;
+  repeated Need needs = 3;
+  repeated Task visible_tasks = 4;
+}
+
+message ListTasksRequest {
+  RoleFilter role_filter = 1;
+  optional string specialty = 2;
+  optional string task_type = 3;
+  repeated string status = 4;    // default: open, in_progress
+  optional string program = 5;
+  optional string tier = 6;
+  optional string assigned_to = 7;
+  optional bool overdue = 8;
+  bool include_snoozed = 9;
+  optional string sort = 10;
+  int32 limit = 11;
+  optional string cursor = 12;
+}
+message ListTasksResponse {
+  repeated Task items = 1;
+  optional string next_cursor = 2;
+}
+
+message GetTaskRequest {
+  int64 task_id = 1;
+  RoleFilter role_filter = 2;
+}
+message GetTaskResponse {
+  Task task = 1;
+  repeated AuditEntry history = 2;
+}
+
+message ListProgramsRequest {}
+message ListProgramsResponse {
+  repeated Program items = 1;
+}
+
+// ============================================================================
+// Interactive write — every mutation carries the version the caller read.
+// ============================================================================
+
+message ClaimTaskRequest {
+  int64 task_id = 1;
+  int32 version = 2;
+  RoleFilter role_filter = 3;
+}
+message CompleteTaskRequest {
+  int64 task_id = 1;
+  int32 version = 2;
+  string resolution = 3;   // booked | referral_approved | referral_not_indicated
+  optional string note = 4;
+  RoleFilter role_filter = 5;
+}
+message DeclineTaskRequest {
+  int64 task_id = 1;
+  int32 version = 2;
+  string reason = 3;
+  int32 snooze_days = 4;   // default 90, applied by the caller
+  RoleFilter role_filter = 5;
+}
+message SnoozeTaskRequest {
+  int64 task_id = 1;
+  int32 version = 2;
+  string until = 3;        // ISO date
+  string reason = 4;
+  RoleFilter role_filter = 5;
+}
+message TaskResponse {
+  Task task = 1;
+}
+
+// ============================================================================
+// Bulk — sync
+// ============================================================================
+
+message StartSyncRunRequest {
+  string source = 1;   // "csv"
+}
+message StartSyncRunResponse {
+  string run_id = 1;
+}
+
+// Generic row: sync sends CSV columns mapped to canonical field names as
+// strings; the Data Service owns parsing, validation, hashing and quarantine.
+message FactRow {
+  map<string, string> fields = 1;
+}
+message UpsertFactsRequest {
+  string run_id = 1;
+  string resource_type = 2;   // patients | diagnoses | labs | encounters
+  int32 chunk_number = 3;     // retried chunk with same (run_id, resource_type, chunk_number) is a no-op
+  repeated FactRow rows = 4;
+}
+message RejectedRow {
+  map<string, string> raw = 1;
+  string reason = 2;
+}
+message UpsertFactsResponse {
+  int32 accepted_count = 1;
+  repeated RejectedRow rejected = 2;
+}
+
+message CompleteSyncRunRequest {
+  string run_id = 1;
+  string status = 2;   // completed | failed
+}
+message CompleteSyncRunResponse {
+  SyncRun run = 1;
+  repeated string changed_patient_ids = 2;
+}
+
+message ListSyncRunsRequest {
+  int32 limit = 1;
+}
+message ListSyncRunsResponse {
+  repeated SyncRun items = 1;
+}
+
+message ProgramDefinition {
+  string program_id = 1;
+  int32 version = 2;
+  string definition_json = 3;  // the parsed YAML, re-serialized as JSON
+  bool active = 4;
+}
+message UpsertProgramsRequest {
+  repeated ProgramDefinition programs = 1;
+}
+message UpsertProgramsResponse {
+  int32 upserted_count = 1;
+}
+
+// ============================================================================
+// Bulk — engine
+// ============================================================================
+
+message DiagnosisFact {
+  string icd_code = 1;
+  string diagnosed_date = 2;
+}
+message LabFact {
+  string test_name = 1;
+  double result_value = 2;
+  string result_date = 3;
+}
+message EncounterFact {
+  string specialty = 1;
+  string encounter_date = 2;
+  string provider_name = 3;
+  bool is_upcoming = 4;   // relative to AS_OF_DATE
+}
+message GetPatientSnapshotRequest {
+  string patient_id = 1;
+  string as_of_date = 2;
+}
+message GetPatientSnapshotResponse {
+  Patient patient = 1;
+  repeated DiagnosisFact diagnoses = 2;
+  repeated LabFact labs = 3;
+  repeated EncounterFact encounters = 4;
+  string snapshot_hash = 5;   // for the idempotency key
+}
+
+// The evaluator's decision for one program/specialty need, as computed by
+// the (stateless) engine. The Data Service diffs this against stored tasks.
+message NeedResult {
+  string specialty = 1;
+  int32 cadence_days = 2;
+  optional string last_visit_date = 3;
+  optional string due_date = 4;
+  bool has_upcoming = 5;
+  string decision = 6;         // no_task | scheduling | referral
+  // Earliest future date this need's decision could flip, ignoring snoozes
+  // (the Data Service folds in any active decline snooze itself, since only
+  // it knows about existing tasks): last_visit + cadence + 1 day, or
+  // upcoming_visit + 1 day, whichever applies. Absent when neither applies
+  // (e.g. a referral need with no visit history at all — nothing about the
+  // fact pattern will flip on its own).
+  optional string next_check_candidate = 7;
+}
+message ProgramResult {
+  string program_id = 1;
+  int32 program_version = 2;
+  bool eligible = 3;
+  optional string tier = 4;
+  repeated NeedResult needs = 5;
+  // Set when the tier came from a lab-based signal (tier_signal in the
+  // program YAML): the lab's result_date + window_months + 1 day, i.e. the
+  // day the tier itself could next change. Absent for a program with no
+  // tier_signal (e.g. primary_care_wellness).
+  optional string tier_recheck_at = 6;
+}
+message SaveEvaluationResultRequest {
+  string patient_id = 1;
+  string idempotency_key = 2;   // hash(patient_id + snapshot_hash)
+  repeated ProgramResult program_results = 3;
+  string evaluated_at = 4;
+  string next_eval_at = 5;
+}
+message SaveEvaluationResultResponse {
+  bool applied = 1;             // false when idempotency_key already seen
+  int32 tasks_created = 2;
+  int32 tasks_closed = 3;
+}
+
+message EnqueueDuePatientsRequest {
+  string as_of_date = 1;
+}
+message EnqueueDuePatientsResponse {
+  int32 enqueued_count = 1;
+}
+message EnqueueAllPatientsRequest {}
+message EnqueueAllPatientsResponse {
+  int32 enqueued_count = 1;
+}
