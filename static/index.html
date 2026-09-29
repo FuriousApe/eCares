@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Care Gap Worklist</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="error-banner" class="error-banner hidden"></div>
+
+<!-- LOGIN SCREEN -->
+<section id="login-screen" class="screen hidden">
+  <div class="login-wrap">
+    <h1 class="brand-title">Care Gap Worklist</h1>
+    <p class="login-sub">Choose your name to sign in</p>
+    <div id="login-users" class="login-users"></div>
+  </div>
+</section>
+
+<!-- WORKLIST SCREEN -->
+<section id="worklist-screen" class="screen hidden">
+  <header class="app-header">
+    <div class="app-title">Care Gap Worklist</div>
+    <div class="header-right">
+      <span id="user-chip" class="user-chip"></span>
+      <button id="logout-btn" class="btn btn-outline-light">Logout</button>
+    </div>
+  </header>
+
+  <div class="filter-bar">
+    <label class="filter-field">
+      <span>Specialty</span>
+      <select id="specialty-filter">
+        <option value="">All specialties</option>
+        <option value="PCP">PCP</option>
+        <option value="Endocrinology">Endocrinology</option>
+        <option value="Cardiology">Cardiology</option>
+        <option value="Podiatry">Podiatry</option>
+        <option value="Ophthalmology">Ophthalmology</option>
+        <option value="Nephrology">Nephrology</option>
+      </select>
+    </label>
+    <label class="filter-field" id="task-type-field">
+      <span>Task type</span>
+      <select id="task-type-filter">
+        <option value="">All task types</option>
+        <option value="scheduling">Scheduling</option>
+        <option value="referral">Referral</option>
+      </select>
+    </label>
+    <button id="refresh-btn" class="btn btn-navy">Refresh worklist</button>
+  </div>
+
+  <main id="patients-container" class="patients-container"></main>
+  <p id="empty-state" class="empty-state hidden">No tasks match the current filters. Nice work.</p>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
