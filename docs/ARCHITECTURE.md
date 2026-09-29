@@ -10,7 +10,9 @@ production-shaped version (separate services, MySQL, Kafka, Redis) — see
 [its architecture doc](https://github.com/FuriousApe/eCares/blob/feature/scaled/docs/ARCHITECTURE.md)
 for the comparison.
 
-Diagram: [`architecture.drawio`](architecture.drawio) (open in draw.io / diagrams.net).
+Diagrams (open in draw.io / diagrams.net):
+[`ecares_lean_architecture_complete.drawio`](ecares_lean_architecture_complete.drawio) (system view, same style as the scaled build's) ·
+[`architecture.drawio`](architecture.drawio) (simple component view).
 
 ```mermaid
 flowchart LR
