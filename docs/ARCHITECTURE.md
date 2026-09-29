@@ -6,7 +6,9 @@ a specialty visit, creates one task per gap, and keeps those tasks correct as
 patient data changes.
 
 Diagrams:
-[`architecture.drawio`](architecture.drawio) · [`database-schema.drawio`](database-schema.drawio)
+[`ecares_scaled_architecture_complete.drawio`](ecares_scaled_architecture_complete.drawio) (full system view: gateway, identity provider, container platform) ·
+[`architecture.drawio`](architecture.drawio) (service-level view) ·
+[`database-schema.drawio`](database-schema.drawio)
 (open in draw.io / diagrams.net). Table-level detail: [`DATABASE.md`](DATABASE.md).
 
 The simpler single-process version lives on `main`; each design choice below
