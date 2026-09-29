@@ -33,6 +33,6 @@ Out of scope for the backend MVP plan; built at the user's request (see root `CL
 
 ## Known limits
 
-- No unit or browser tests yet. It was verified by typechecking, a production build, and manual runs against a mock of the API for the worklist, patient panel, claim and complete flows. **It has not been run against the live Compose stack**, and the Docker image build has not been run.
+- No unit or browser tests yet. It was verified by typechecking, a production build, and manual runs against a mock of the API for the worklist, patient panel, claim and complete flows. The Docker image builds and serves under Compose, and the Worklist was checked against the live stack (real tasks, phone numbers, overdue days, language flags). **The claim / complete / snooze / decline actions and the Admin page have not been exercised against the live API.**
 - Admin page result rendering (`counts_json` summary) is generic because the shape of a sync run's counts is not fixed by the schema.
 - No dark mode, no i18n, desktop-first layout (usable on a tablet; not tuned for phones).
