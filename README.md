@@ -1,5 +1,13 @@
 # Lean care-gap worklist
 
+## Live demo
+
+https://ecares-abhinav-1745.azurewebsites.net
+
+Hosted on the Azure App Service free tier (F1), so it sleeps when idle and the
+first request can be slow. Data lives in a SQLite file inside the deploy, so a
+redeploy resets it (re-seeded from `data/`). Use the demo logins below.
+
 ## Setup
 
 ```bash
