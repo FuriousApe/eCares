@@ -170,6 +170,52 @@ def test_matching_open_task_is_left_untouched(session):
     assert task.version == 1  # no-op: no version bump
 
 
+def test_open_task_due_date_untouched_by_small_deviation(session):
+    _patient(session)
+    session.add(
+        Task(
+            patient_id="P1",
+            program_id="diabetes_management",
+            specialty="Endocrinology",
+            task_type="scheduling",
+            status="open",
+            due_date=date(2026, 4, 1),
+            program_version=1,
+            version=1,
+        )
+    )
+    session.flush()
+    # 30 days off -- inside the hysteresis band, should not retarget.
+    pr = _program_result(needs=[_need(due_date=date(2026, 5, 1))])
+    _save(session, program_results=[pr])
+    task = session.query(Task).one()
+    assert task.due_date == date(2026, 4, 1)
+    assert task.version == 1
+
+
+def test_open_task_due_date_retargeted_past_deviation_threshold(session):
+    _patient(session)
+    session.add(
+        Task(
+            patient_id="P1",
+            program_id="diabetes_management",
+            specialty="Endocrinology",
+            task_type="scheduling",
+            status="open",
+            due_date=date(2026, 4, 1),
+            program_version=1,
+            version=1,
+        )
+    )
+    session.flush()
+    # 90 days off -- past the 60-day hysteresis band, should retarget in place.
+    pr = _program_result(needs=[_need(due_date=date(2026, 7, 1))])
+    _save(session, program_results=[pr])
+    task = session.query(Task).one()
+    assert task.due_date == date(2026, 7, 1)
+    assert task.version == 2
+
+
 def test_no_task_decision_closes_open_task_with_upcoming_visit(session):
     _patient(session)
     task = Task(

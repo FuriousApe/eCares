@@ -12,10 +12,10 @@ of interleaving into two open tasks for one key.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from libs.common.dates import is_past
@@ -164,6 +164,34 @@ def _close_task(session: Session, task: Task, *, resolution: str, request_id: st
     )
 
 
+# Hysteresis: an open task's due_date only moves if the freshly computed one
+# has drifted this far from what's already on the task -- otherwise a
+# same-day noise wobble (e.g. a corrected encounter row shifting last_visit
+# by a day) would re-target the task every re-evaluation instead of leaving
+# it alone.
+_DUE_DATE_DEVIATION_DAYS = 60
+
+
+def _retarget_if_deviated(session: Session, task: Task, new_due_date: date | None, *, request_id: str) -> None:
+    if new_due_date is None or task.due_date is None:
+        return
+    if abs((new_due_date - task.due_date).days) <= _DUE_DATE_DEVIATION_DAYS:
+        return
+    before = {"task_id": task.task_id, "due_date": task.due_date.isoformat(), "version": task.version}
+    task.due_date = new_due_date
+    task.version += 1
+    write_audit(
+        session,
+        actor="engine",
+        action="task_due_date_updated",
+        entity="task",
+        patient_id=task.patient_id,
+        before=before,
+        after={"task_id": task.task_id, "due_date": new_due_date.isoformat(), "version": task.version},
+        request_id=request_id,
+    )
+
+
 def save_evaluation_result(
     session: Session,
     *,
@@ -283,7 +311,8 @@ def save_evaluation_result(
                 open_task = None
 
             if open_task is not None:
-                continue  # matching open task already exists: no-op, no version bump
+                _retarget_if_deviated(session, open_task, need["due_date"], request_id=request_id)
+                continue  # matching open task already exists: no reopen/replace
 
             declined = _latest_declined(session, patient_id, program_id, specialty)
             if declined is not None and is_snoozed(declined.snooze_until, as_of_date):
@@ -350,26 +379,39 @@ def upsert_programs(session: Session, programs: list[dict[str, Any]]) -> int:
     return count
 
 
+# Commit every N outbox rows so a full-population enqueue doesn't hold one
+# multi-million-row transaction (and its row locks) open for its whole run.
+_ENQUEUE_COMMIT_CHUNK = 5000
+
+
 def enqueue_due_patients(session: Session, as_of_date: date) -> int:
+    # Sargable range on the indexed column (ix_eval_state_next_eval_at) —
+    # wrapping it in func.date(...) would force a full scan instead of using
+    # the index, which matters once patient_eval_state has ~1M rows.
+    cutoff = datetime.combine(as_of_date, datetime.min.time()) + timedelta(days=1)
     due_ids = list(
         session.scalars(
             select(PatientEvalState.patient_id).where(
                 PatientEvalState.next_eval_at.is_not(None),
-                func.date(PatientEvalState.next_eval_at) <= as_of_date,
+                PatientEvalState.next_eval_at < cutoff,
             )
         )
     )
-    for patient_id in due_ids:
+    for i, patient_id in enumerate(due_ids, start=1):
         write_outbox(
             session, topic="patient.changed", event_key=patient_id, payload={"patient_id": patient_id, "reason": "due_recheck"}
         )
+        if i % _ENQUEUE_COMMIT_CHUNK == 0:
+            session.commit()
     return len(due_ids)
 
 
 def enqueue_all_patients(session: Session) -> int:
     patient_ids = list(session.scalars(select(Patient.patient_id)))
-    for patient_id in patient_ids:
+    for i, patient_id in enumerate(patient_ids, start=1):
         write_outbox(
             session, topic="patient.changed", event_key=patient_id, payload={"patient_id": patient_id, "reason": "enqueue_all"}
         )
+        if i % _ENQUEUE_COMMIT_CHUNK == 0:
+            session.commit()
     return len(patient_ids)

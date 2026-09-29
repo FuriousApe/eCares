@@ -50,6 +50,10 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # Default partition count for auto-created topics (patient.changed
+      # included) -- >1 so `engine` can actually be scaled out (a consumer
+      # group only parallelizes up to the partition count).
+      KAFKA_NUM_PARTITIONS: "6"
       CLUSTER_ID: "Q2FyZUdhcEVuZ2luZUtSYWZ0"
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
@@ -110,6 +114,11 @@ services:
       timeout: 5s
       retries: 15
 
+  # Single replica processes patient.changed one message at a time (two
+  # blocking gRPC calls each) -- for a full-population re-evaluation, scale
+  # out with `docker compose up --scale engine=N` (N <= KAFKA_NUM_PARTITIONS
+  # above; same KAFKA_CONSUMER_GROUP, so Kafka spreads partitions across
+  # replicas automatically, no code change needed).
   engine:
     build: .
     environment:
