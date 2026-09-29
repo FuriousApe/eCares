@@ -1,53 +1,62 @@
 # services/ui
 
-A minimal static dashboard for the Worklist REST API: role switcher, task
-worklist with claim/complete/decline/snooze actions, a patient search/detail
-view, and an admin panel (sync, evaluate, sync-run history). Plain HTML/CSS
-and vanilla JS calling the API directly with `fetch` from the browser — no
-build step, no framework, no npm install. See `ASSUMPTIONS.md` for the
-endpoint-shape guesses and filter-param choices this made.
+React (Vite + TypeScript) front end for the Worklist API, built for **front desk and call center staff**: quick to scan, one obvious next step per row, and everything needed for a phone call in one panel.
 
-This is a demo dashboard against an MVP backend, not a product — see
-`ASSUMPTIONS.md` for what was deliberately kept simple.
+## What staff see
 
-## Run standalone (no Docker)
+| Screen | Purpose |
+|---|---|
+| **Worklist** | Tasks grouped into *To do*, *My tasks*, *Overdue* and *All active*. Filter by visit type, program (and task type for clinical). Search loaded rows by name, phone or ID (`/` jumps to search). Each row has a single primary button: **Take task**, then **Booked ✓** / **Complete ✓**. |
+| **Patient panel** (click any row) | Big tap-to-call phone number with Copy, language (highlighted when not English), primary doctor, programs, the patient's tasks with all actions, care schedule and per-task history. |
+| **Patients** | Server-side search by name, phone or ID for inbound calls. |
+| **Admin** (admin role only) | Load data, re-check due patients or everyone, recent data loads. |
+
+Task actions use plain language: **Take task**, **Booked**, **Call back later** (returns the task to the shared list after a chosen date), **Patient declined** (with reason and how long not to ask again).
+
+If two people act on the same task, the API rejects the stale one (409). The UI tells the user, refreshes, and never overwrites a colleague's work.
+
+## Run locally
 
 ```sh
 cd services/ui
-python -m http.server 3000
+npm install
+npm run dev          # http://localhost:3000
 ```
 
-Open `http://localhost:3000`, set the "API base" field (top of the page) to
-wherever the Worklist API is running, pick a role and a user id.
+Port 3000 is required: it is the origin the Worklist API's CORS setting allows. The API address comes from `public/config.js` (`http://localhost:8000` by default).
 
-Or just open `index.html` directly in a browser (`file://`) — it still
-works, since it's a static page with no server-side dependency.
-
-## Run via Docker Compose
-
-The root `docker-compose.yml` already builds this service:
-
-```yaml
-ui:
-  build: ./services/ui
-  environment:
-    WORKLIST_API_BASE_URL: http://localhost:8000
-  ports: ["3000:3000"]
-  depends_on:
-    - worklist-api
+```sh
+npm run build        # typecheck + production build into dist/
+npm run typecheck
 ```
 
-`docker compose up ui` (or `docker compose up` for the whole stack) serves
-the page at `http://localhost:3000`. The container's `WORKLIST_API_BASE_URL`
-is templated into `config.js` at container start; because the browser talks
-to the Worklist API's published port on `localhost:8000` directly (not
-through the `ui` container's network), the compose default already matches
-what the page needs for local use — no extra config required.
+## Run with Docker Compose
 
-## Files
+`docker compose up ui` (or the whole stack). The Dockerfile builds the app with Node, then serves `dist/` with Python's stdlib `http.server` on port 3000 and templates `WORKLIST_API_BASE_URL` into `config.js` at container start. Unchanged from the previous UI, so `docker-compose.yml` needs no edits.
 
-- `index.html` — the entire app: markup, CSS and JS in one file.
-- `config.js` — one line setting the default API base URL; templated by the
-  Dockerfile's `CMD` from `$WORKLIST_API_BASE_URL` at container start.
-- `Dockerfile` — `python:3.12-slim` serving the two files above with the
-  stdlib `http.server` on port 3000.
+## Sign-in
+
+The backend has no real auth (per the plan): it trusts `X-User-Role` and `X-User-Id`. The header dropdown picks a demo user, and the choice is remembered in the browser.
+
+| User | Role | Sees |
+|---|---|---|
+| Jordan Lee | Front Desk (`scheduler`) | Scheduling tasks |
+| Dr. Patel | Clinical (`clinical`) | Scheduling + referral tasks |
+| Sam Rivera | Admin (`admin`) | Everything, plus the Admin page |
+
+## Layout
+
+```
+src/
+  api.ts            typed fetch client, ApiError (409 = someone else got there first)
+  session.tsx       current user, API client, meta (as-of date)
+  hooks.ts          usePaged (cursor pagination that never flashes empty), debounce, hash routing
+  format.ts         dates, phone numbers, plain-language labels
+  components/       TaskActions (+ modals), PatientPanel (drawer), Badge/Modal/Toasts
+  pages/            Worklist, Patients, Admin
+  styles.css        design tokens + all styles (no UI kit)
+```
+
+Dependencies are just `react` and `react-dom`. Routing is hash-based, so no server rewrite rules are needed.
+
+See `ASSUMPTIONS.md` for decisions and known limits.

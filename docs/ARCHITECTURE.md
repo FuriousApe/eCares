@@ -14,7 +14,7 @@ notes what it replaces.
 
 ```mermaid
 flowchart LR
-  U[Staff] --> UI[Web UI :3000] <-->|REST| API[Worklist API]
+  U[Staff] --> UI[Web UI · React :3000] <-->|REST| API[Worklist API]
   API <-->|gRPC| DS[Data Service<br/>sole DB owner]
   SYNC[Sync Job] -->|UpsertFacts| DS
   SCHED[Scheduler] -->|EnqueueDuePatients| DS
@@ -47,7 +47,7 @@ flowchart LR
 
 | Service | Path | Role | Scales by |
 |---|---|---|---|
-| **Web UI** | `services/ui` | Static dashboard against the Worklist API. Served on `:3000`. | CDN / replicas |
+| **Web UI** | `services/ui` | React (Vite + TypeScript) single-page app for front desk and call center staff: worklist, patient panel, patient search, admin. Built to static files and served on `:3000`. | CDN / replicas |
 | **Worklist API** | `services/worklist_api` | Public REST surface (FastAPI). Resolves the caller's role from `X-User-Role`, translates REST ⇄ gRPC, maps gRPC errors to HTTP status codes. Holds no state. | Replicas behind a load balancer |
 | **Data Service** | `services/data_service` | gRPC server; the only DB client. Runs three logical roles selected by `DS_ROLES`: `interactive` (worklist reads/writes), `bulk` (sync + evaluation saves), `relay` (outbox → Kafka). | Split roles into separate deployments so bulk load cannot starve interactive traffic |
 | **Engine** | `services/engine` | Kafka consumer group `engine`. For each `patient.changed` message: fetch snapshot → evaluate every active program → save result. Failed patients retry then go to a DLQ topic. | More replicas, up to the topic partition count (6) |
